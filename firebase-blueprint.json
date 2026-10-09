@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "App": {
+      "title": "App",
+      "description": "Represents an Android application in the marketplace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "packageName": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["PUBLISHED", "PENDING", "SUSPENDED"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "packageName", "name", "status"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Marketplace configuration settings.",
+      "type": "object",
+      "properties": {
+        "storeName": { "type": "string" },
+        "maintenanceMode": { "type": "boolean" }
+      }
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Log entry for administrative actions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "action": { "type": "string" },
+        "timestamp": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/apps/{appId}": {
+      "schema": "App",
+      "description": "Collection of marketplace applications."
+    },
+    "/settings/config": {
+      "schema": "Setting",
+      "description": "Singleton configuration document."
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "System audit logs."
+    }
+  }
+}

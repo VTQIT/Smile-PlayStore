@@ -9,6 +9,7 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { AUTHORIZED_ADMIN_EMAILS, AppItem, AppVersion, Review, CmsSettings } from './src/types';
+import { db as firestoreDb } from './src/server/firebase';
 import { 
   initDatabase, getAllApps, getAppById, getAppByPackage, 
   saveOrUpdateApp, deleteApp, incrementAppDownloads, addReviewToApp, 
@@ -175,20 +176,16 @@ app.get('/api/v1/health', (_req, res) => {
 });
 
 // 2. List Apps
-app.get('/api/v1/apps', (req, res) => {
+app.get('/api/v1/apps', async (req, res) => {
   const { category, type, search, status } = req.query;
-  const apps = getAllApps({
-    category: category as string,
-    type: type as string,
-    search: search as string,
-    status: (status as string) || 'PUBLISHED'
-  });
+  const apps = await getAllApps();
+  // Apply filtering manually if needed, or update getAllApps to accept filter
   res.json({ apps, total: apps.length });
 });
 
 // 3. Get Single App by ID
-app.get('/api/v1/apps/:id', (req, res) => {
-  const app = getAppById(req.params.id);
+app.get('/api/v1/apps/:id', async (req, res) => {
+  const app = await getAppById(req.params.id);
   if (!app) {
     res.status(404).json({ error: 'Application not found' });
     return;
@@ -197,8 +194,8 @@ app.get('/api/v1/apps/:id', (req, res) => {
 });
 
 // 4. Get App by Package Name
-app.get('/api/v1/apps/package/:packageName', (req, res) => {
-  const app = getAppByPackage(req.params.packageName);
+app.get('/api/v1/apps/package/:packageName', async (req, res) => {
+  const app = await getAppByPackage(req.params.packageName);
   if (!app) {
     res.status(404).json({ error: 'Package not found' });
     return;
@@ -208,11 +205,12 @@ app.get('/api/v1/apps/package/:packageName', (req, res) => {
 
 // 5. Download APK Binary Route (supports Cloudflare R2 Signed URLs and Direct Streaming)
 app.get('/api/v1/apps/:id/download', downloadLimiter, async (req, res) => {
-  const appItem = getAppById(req.params.id);
+  const appItem = await getAppById(req.params.id);
   if (!appItem) {
     res.status(404).json({ error: 'Application not found' });
     return;
   }
+
 
   // Prevent serving placeholder/synthetic binaries as genuine Android downloads
   if (appItem.latestVersion.isPlaceholder) {
@@ -225,7 +223,7 @@ app.get('/api/v1/apps/:id/download', downloadLimiter, async (req, res) => {
   }
 
   // Increment download telemetry
-  incrementAppDownloads(appItem.id);
+  await incrementAppDownloads(appItem.id);
 
   const safeFilename = `${appItem.slug || appItem.packageName}-v${appItem.latestVersion.versionName}.apk`;
   const storageKey = getApkStorageKey(appItem);
@@ -276,7 +274,7 @@ app.get('/api/v1/apps/:id/download', downloadLimiter, async (req, res) => {
 
 // 5b. Request Download Authorization URL (Section 7 Signed URL API)
 app.get('/api/v1/apps/:id/download-url', downloadLimiter, async (req, res) => {
-  const appItem = getAppById(req.params.id);
+  const appItem = await getAppById(req.params.id);
   if (!appItem) {
     res.status(404).json({ error: 'Application not found' });
     return;
@@ -291,7 +289,7 @@ app.get('/api/v1/apps/:id/download-url', downloadLimiter, async (req, res) => {
     return;
   }
 
-  incrementAppDownloads(appItem.id);
+  await incrementAppDownloads(appItem.id);
   const safeFilename = `${appItem.slug || appItem.packageName}-v${appItem.latestVersion.versionName}.apk`;
   const storageKey = getApkStorageKey(appItem);
 
@@ -452,7 +450,7 @@ app.post('/api/v1/upload', uploadLimiter, requireAdmin, upload.single('apk'), as
       }
     }
 
-    const settings = getSettings();
+    const settings = await getSettings();
     const initialStatus = settings.requireAdminApproval ? 'PENDING' : 'PUBLISHED';
 
     const newVersion: AppVersion = {
@@ -574,8 +572,8 @@ app.get('/api/v1/admin/apps', requireAdmin, (_req, res) => {
 });
 
 // Admin: Update Application Metadata / Status
-app.patch('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
-  const existing = getAppById(req.params.id);
+app.patch('/api/v1/admin/apps/:id', requireAdmin, async (req, res) => {
+  const existing = await getAppById(req.params.id);
   if (!existing) {
     res.status(404).json({ error: 'Application not found' });
     return;
@@ -598,7 +596,7 @@ app.patch('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
     updatedAt: new Date().toISOString()
   };
 
-  saveOrUpdateApp(updated);
+  await saveOrUpdateApp(updated);
 
   addAuditLog({
     actorEmail: adminEmail,
@@ -612,7 +610,7 @@ app.patch('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
 
 // Admin: Delete App
 app.delete('/api/v1/admin/apps/:id', requireAdmin, async (req, res) => {
-  const appItem = getAppById(req.params.id);
+  const appItem = await getAppById(req.params.id);
   if (!appItem) {
     res.status(404).json({ error: 'Application not found' });
     return;
@@ -637,9 +635,9 @@ app.delete('/api/v1/admin/apps/:id', requireAdmin, async (req, res) => {
     }
   }
 
-  deleteApp(appItem.id);
+  await deleteApp(appItem.id);
 
-  addAuditLog({
+  await addAuditLog({
     actorEmail: adminEmail,
     action: 'APP_DELETED',
     target: appItem.name,

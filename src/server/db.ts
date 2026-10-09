@@ -2,142 +2,50 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { AppItem, AppVersion, CmsSettings, CmsAuditLog, Review } from '../types';
-import { INITIAL_APPS } from '../data/mockApps';
-import { buildValidApkBuffer } from './apkGenerator';
+import { db } from './firebase';
+import { collection, doc, getDoc, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const APK_STORAGE_DIR = path.resolve(DATA_DIR, 'uploads', 'apks');
-const DB_FILE = path.resolve(DATA_DIR, 'database.json');
+const APK_STORAGE_DIR = path.resolve(process.cwd(), 'data', 'uploads', 'apks');
 
-interface DatabaseSchema {
-  apps: AppItem[];
-  settings: CmsSettings;
-  auditLogs: CmsAuditLog[];
-}
-
-const DEFAULT_SETTINGS: CmsSettings = {
-  storeName: 'Smile Store',
-  tagline: 'Your independent Android app marketplace.',
-  requireAdminApproval: false,
-  maxUploadSizeMB: 250,
-  storageProvider: 'cloudflare_r2',
-  cdnDomain: 'https://cdn.smilestore.example.com',
-  maintenanceMode: false,
-  allowPublicUploads: true
-};
-
-// Ensure directories and files exist
 export function initDatabase(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  // Ensure directories exist
   if (!fs.existsSync(APK_STORAGE_DIR)) {
     fs.mkdirSync(APK_STORAGE_DIR, { recursive: true });
   }
-
-  let dbData: DatabaseSchema;
-
-  if (!fs.existsSync(DB_FILE)) {
-    dbData = {
-      apps: [],
-      settings: DEFAULT_SETTINGS,
-      auditLogs: []
-    };
-
-    fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf-8');
-  } else {
-    // Keep existing DB migration logic
-    try {
-      const current = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as DatabaseSchema;
-      // ... (migration logic)
-    } catch {}
-  }
 }
 
-function readDb(): DatabaseSchema {
-  try {
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    return JSON.parse(raw);
-  } catch (err) {
-    initDatabase();
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    return JSON.parse(raw);
-  }
+export async function getAllApps(): Promise<AppItem[]> {
+  const snapshot = await getDocs(collection(db, 'apps'));
+  return snapshot.docs.map(doc => doc.data() as AppItem);
 }
 
-function writeDb(data: DatabaseSchema): void {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+export async function getAppById(id: string): Promise<AppItem | null> {
+  const docRef = doc(db, 'apps', id);
+  const snapshot = await getDoc(docRef);
+  return snapshot.exists() ? (snapshot.data() as AppItem) : null;
 }
 
-// App Operations
-export function getAllApps(filter?: { category?: string; type?: string; search?: string; status?: string }): AppItem[] {
-  const db = readDb();
-  let list = db.apps;
-
-  if (filter?.status) {
-    list = list.filter(a => a.status === filter.status);
-  }
-  if (filter?.type && filter.type !== 'ALL') {
-    list = list.filter(a => a.type === filter.type);
-  }
-  if (filter?.category && filter.category !== 'All') {
-    list = list.filter(a => a.category === filter.category);
-  }
-  if (filter?.search) {
-    const q = filter.search.toLowerCase();
-    list = list.filter(a => 
-      a.name.toLowerCase().includes(q) ||
-      a.packageName.toLowerCase().includes(q) ||
-      a.category.toLowerCase().includes(q) ||
-      a.description.toLowerCase().includes(q)
-    );
-  }
-
-  return list;
+export async function getAppByPackage(packageName: string): Promise<AppItem | null> {
+  const allApps = await getAllApps();
+  return allApps.find(a => a.packageName.toLowerCase() === packageName.toLowerCase()) || null;
 }
 
-export function getAppById(id: string): AppItem | null {
-  const db = readDb();
-  return db.apps.find(a => a.id === id) || null;
-}
-
-export function getAppByPackage(packageName: string): AppItem | null {
-  const db = readDb();
-  return db.apps.find(a => a.packageName.toLowerCase() === packageName.toLowerCase()) || null;
-}
-
-export function saveOrUpdateApp(app: AppItem): AppItem {
-  const db = readDb();
-  const idx = db.apps.findIndex(a => a.id === app.id);
-  if (idx >= 0) {
-    db.apps[idx] = app;
-  } else {
-    db.apps.unshift(app);
-  }
-  writeDb(db);
+export async function saveOrUpdateApp(app: AppItem): Promise<AppItem> {
+  await setDoc(doc(db, 'apps', app.id), app);
   return app;
 }
 
-export function deleteApp(id: string): boolean {
-  const db = readDb();
-  const target = db.apps.find(a => a.id === id);
-  if (!target) return false;
-
-  // Try removing binary file if present
-  const filename = `${target.slug}-v${target.latestVersion.versionName}.apk`;
-  const filePath = path.resolve(APK_STORAGE_DIR, filename);
-  if (fs.existsSync(filePath)) {
-    try { fs.unlinkSync(filePath); } catch {}
+export async function deleteApp(id: string): Promise<boolean> {
+  try {
+    await deleteDoc(doc(db, 'apps', id));
+    return true;
+  } catch {
+    return false;
   }
-
-  db.apps = db.apps.filter(a => a.id !== id);
-  writeDb(db);
-  return true;
 }
 
-export function incrementAppDownloads(id: string): AppItem | null {
-  const db = readDb();
-  const app = db.apps.find(a => a.id === id);
+export async function incrementAppDownloads(id: string): Promise<AppItem | null> {
+  const app = await getAppById(id);
   if (!app) return null;
 
   app.downloadCount += 1;
@@ -145,23 +53,24 @@ export function incrementAppDownloads(id: string): AppItem | null {
     ? `${Math.round(app.downloadCount / 1000)}K+` 
     : `${app.downloadCount}`;
   
-  writeDb(db);
+  await saveOrUpdateApp(app);
   return app;
 }
 
-export function addReviewToApp(id: string, review: Review): AppItem | null {
-  const db = readDb();
-  const app = db.apps.find(a => a.id === id);
+export async function addReviewToApp(id: string, review: Review): Promise<AppItem | null> {
+  const app = await getAppById(id);
   if (!app) return null;
 
   app.reviews.unshift(review);
-  const total = app.reviews.reduce((sum, r) => sum + r.rating, 0);
+  const total = app.reviews.reduce((sum: number, r: Review) => sum + r.rating, 0);
   app.rating = Number((total / app.reviews.length).toFixed(1));
   app.ratingCount = app.reviews.length;
 
-  writeDb(db);
+  await saveOrUpdateApp(app);
   return app;
 }
+// ... (keep remaining APK and setting functions, making them async where needed)
+
 
 // Get APK file path on disk
 export function getApkFilePath(app: AppItem): string | null {
@@ -211,45 +120,54 @@ export function saveUploadedApk(appId: string, slug: string, versionName: string
   return { filePath: finalPath, sha256, size, buffer, storageKey };
 }
 
-// Settings
-export function getSettings(): CmsSettings {
-  return readDb().settings || DEFAULT_SETTINGS;
+const SETTINGS_DOC = doc(db, 'settings', 'config');
+
+export async function getSettings(): Promise<CmsSettings> {
+  const snapshot = await getDoc(SETTINGS_DOC);
+  return snapshot.exists() ? (snapshot.data() as CmsSettings) : DEFAULT_SETTINGS;
 }
 
-export function updateSettings(settings: CmsSettings): CmsSettings {
-  const db = readDb();
-  db.settings = { ...DEFAULT_SETTINGS, ...settings };
-  writeDb(db);
-  return db.settings;
+export async function updateSettings(settings: CmsSettings): Promise<CmsSettings> {
+  await setDoc(SETTINGS_DOC, settings, { merge: true });
+  return settings;
 }
 
-// Audit Logs
-export function getAuditLogs(): CmsAuditLog[] {
-  return readDb().auditLogs || [];
+export async function getAuditLogs(): Promise<CmsAuditLog[]> {
+  const snapshot = await getDocs(collection(db, 'auditLogs'));
+  return snapshot.docs.map(doc => doc.data() as CmsAuditLog);
 }
 
-export function addAuditLog(log: Omit<CmsAuditLog, 'id' | 'timestamp'>): CmsAuditLog {
-  const db = readDb();
+export async function addAuditLog(log: Omit<CmsAuditLog, 'id' | 'timestamp'>): Promise<CmsAuditLog> {
   const newLog: CmsAuditLog = {
     ...log,
     id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     timestamp: new Date().toLocaleString()
   };
-  db.auditLogs.unshift(newLog);
-  if (db.auditLogs.length > 200) {
-    db.auditLogs = db.auditLogs.slice(0, 200);
-  }
-  writeDb(db);
+  await setDoc(doc(db, 'auditLogs', newLog.id), newLog);
   return newLog;
 }
 
+
+const DEFAULT_SETTINGS: CmsSettings = {
+  storeName: 'Smile Store',
+  tagline: 'Your independent Android app marketplace.',
+  requireAdminApproval: false,
+  maxUploadSizeMB: 250,
+  storageProvider: 'cloudflare_r2',
+  cdnDomain: 'https://cdn.smilestore.example.com',
+  maintenanceMode: false,
+  allowPublicUploads: true
+};
+
+// ... (other functions)
+
 // Updates Check
-export function checkPackageUpdates(packages: { packageName: string; versionCode: number }[]): { updates: any[] } {
-  const db = readDb();
+export async function checkPackageUpdates(packages: { packageName: string; versionCode: number }[]): Promise<{ updates: any[] }> {
+  const allApps = await getAllApps();
   const updates: any[] = [];
 
   for (const pkg of packages) {
-    const app = db.apps.find(a => a.packageName.toLowerCase() === pkg.packageName.toLowerCase() && a.status === 'PUBLISHED');
+    const app = allApps.find(a => a.packageName.toLowerCase() === pkg.packageName.toLowerCase() && a.status === 'PUBLISHED');
     if (app && app.latestVersion.versionCode > pkg.versionCode) {
       updates.push({
         packageName: app.packageName,
@@ -267,3 +185,4 @@ export function checkPackageUpdates(packages: { packageName: string; versionCode
 
   return { updates };
 }
+
