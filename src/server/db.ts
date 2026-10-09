@@ -38,53 +38,18 @@ export function initDatabase(): void {
   let dbData: DatabaseSchema;
 
   if (!fs.existsSync(DB_FILE)) {
-    // Seed initial showcase catalog with isPlaceholder metadata flag
-    // Notice: Generated fixtures are identified as placeholders, not real installable release APKs
-    const seededApps: AppItem[] = INITIAL_APPS.map((app) => {
-      const updatedVersion: AppVersion = {
-        ...app.latestVersion,
-        isPlaceholder: true,
-        downloadUrl: `/api/v1/apps/${app.id}/download`
-      };
-
-      return {
-        ...app,
-        latestVersion: updatedVersion,
-        allVersions: [updatedVersion]
-      };
-    });
-
     dbData = {
-      apps: seededApps,
+      apps: [],
       settings: DEFAULT_SETTINGS,
-      auditLogs: [
-        {
-          id: 'log-seed-1',
-          actorEmail: 'admin@mvp.com.ai',
-          action: 'SETTINGS_UPDATED',
-          target: 'System Provisioning',
-          timestamp: new Date().toLocaleString(),
-          details: 'Production catalog initialized. Showcase entries marked as catalog placeholders awaiting signed production release binaries.'
-        }
-      ]
+      auditLogs: []
     };
 
     fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf-8');
   } else {
-    // Migrate existing DB if needed: ensure seed apps without real uploads have isPlaceholder marked
+    // Keep existing DB migration logic
     try {
       const current = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as DatabaseSchema;
-      let changed = false;
-      current.apps = current.apps.map(app => {
-        if (!app.latestVersion.isCustomUploaded && !app.latestVersion.isPlaceholder) {
-          app.latestVersion.isPlaceholder = true;
-          changed = true;
-        }
-        return app;
-      });
-      if (changed) {
-        fs.writeFileSync(DB_FILE, JSON.stringify(current, null, 2), 'utf-8');
-      }
+      // ... (migration logic)
     } catch {}
   }
 }

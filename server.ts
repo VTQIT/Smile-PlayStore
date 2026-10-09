@@ -378,7 +378,7 @@ app.post('/api/v1/updates/check', (req, res) => {
 });
 
 // 8. Upload & Publish APK (Multipart form-data)
-app.post('/api/v1/upload', uploadLimiter, upload.single('apk'), async (req, res) => {
+app.post('/api/v1/upload', uploadLimiter, requireAdmin, upload.single('apk'), async (req, res) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No APK file uploaded' });

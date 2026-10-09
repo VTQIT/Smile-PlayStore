@@ -467,7 +467,7 @@ export default function App() {
                   <div className="w-12 h-12 rounded-2xl bg-slate-800 flex items-center justify-center mx-auto text-slate-400">
                     <Search className="w-6 h-6 text-amber-400" />
                   </div>
-                  <h4 className="text-base font-bold text-white">No applications found</h4>
+                  <h4 className="text-base font-bold text-white">No apps available yet.</h4>
                   <p className="text-xs text-slate-400 max-w-sm mx-auto">
                     We could not find any applications matching your query. Would you like to upload this APK to Smile Store?
                   </p>
