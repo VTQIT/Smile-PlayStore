@@ -8,7 +8,7 @@ import {
 import { AppItem, AppVersion, AUTHORIZED_ADMIN_EMAILS, CmsSettings, CmsAuditLog } from '../types';
 import { 
   loadCmsSettings, saveCmsSettings, loadAuditLogs, recordAuditLog, 
-  loadAdminSession, saveAdminSession, saveApp, deleteSavedApp 
+  loadAdminSession, loadAdminToken, saveAdminSession, saveApp, deleteSavedApp 
 } from '../services/storageService';
 import { 
   apiAdminLogin, apiUpdateAdminApp, apiDeleteAdminApp, 
@@ -55,10 +55,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Editing App Modal State
   const [editingApp, setEditingApp] = useState<AppItem | null>(null);
 
-  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminToken, setAdminToken] = useState<string | null>(() => loadAdminToken());
   const [storageStatus, setStorageStatus] = useState<any>(null);
 
-  const isAuthorized = currentAdminEmail && AUTHORIZED_ADMIN_EMAILS.includes(currentAdminEmail as any);
+  const isAuthorized = Boolean(currentAdminEmail && adminToken && AUTHORIZED_ADMIN_EMAILS.includes(currentAdminEmail as any));
 
   useEffect(() => {
     if (isAuthorized) {
@@ -73,19 +73,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       try {
         const res = await apiAdminLogin(cleanEmail);
         setAdminToken(res.token);
-      } catch (e) {
-        console.warn('API login notice:', e);
+        setCurrentAdminEmail(cleanEmail);
+        saveAdminSession(cleanEmail, res.token);
+        setAuthError(null);
+        recordAuditLog({
+          actorEmail: cleanEmail,
+          action: 'SETTINGS_UPDATED',
+          target: 'Admin Session',
+          details: `Administrator logged into CMS console.`
+        });
+        setAuditLogs(loadAuditLogs());
+      } catch (e: any) {
+        setAuthError(e.message || 'Authentication failed. Please check server connection.');
       }
-      setCurrentAdminEmail(cleanEmail);
-      saveAdminSession(cleanEmail);
-      setAuthError(null);
-      recordAuditLog({
-        actorEmail: cleanEmail,
-        action: 'SETTINGS_UPDATED',
-        target: 'Admin Session',
-        details: `Administrator logged into CMS console.`
-      });
-      setAuditLogs(loadAuditLogs());
     } else {
       setAuthError(`Access Denied: "${emailToVerify}" is not authorized. Only admin@mvp.com.ai and fileslanaja@gmail.com have CMS administrative clearance.`);
     }
@@ -102,7 +102,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
     setCurrentAdminEmail(null);
     setAdminToken(null);
-    saveAdminSession(null);
+    saveAdminSession(null, null);
     setAuditLogs(loadAuditLogs());
   };
 
@@ -117,7 +117,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
 
     try {
-      await apiUpdateAdminApp(app.id, { status: newStatus }, adminToken || undefined, currentAdminEmail);
+      await apiUpdateAdminApp(app.id, { status: newStatus }, adminToken || undefined);
     } catch (e) {
       console.warn('Backend update sync note:', e);
     }
@@ -147,7 +147,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!editingApp || !currentAdminEmail) return;
 
     try {
-      await apiUpdateAdminApp(editingApp.id, editingApp, adminToken || undefined, currentAdminEmail);
+      await apiUpdateAdminApp(editingApp.id, editingApp, adminToken || undefined);
     } catch (err) {
       console.warn('Backend edit sync note:', err);
     }
@@ -171,7 +171,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!currentAdminEmail) return;
     if (window.confirm(`Are you sure you want to permanently delete "${app.name}" (${app.packageName}) from the marketplace?`)) {
       try {
-        await apiDeleteAdminApp(app.id, adminToken || undefined, currentAdminEmail);
+        await apiDeleteAdminApp(app.id, adminToken || undefined);
       } catch (e) {
         console.warn('Backend delete sync note:', e);
       }
@@ -196,7 +196,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!currentAdminEmail) return;
 
     try {
-      await apiSaveAdminSettings(settings, adminToken || undefined, currentAdminEmail);
+      await apiSaveAdminSettings(settings, adminToken || undefined);
     } catch (err) {
       console.warn('Backend settings sync note:', err);
     }

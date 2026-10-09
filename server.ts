@@ -5,6 +5,8 @@ import os from 'os';
 import multer from 'multer';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { AUTHORIZED_ADMIN_EMAILS, AppItem, AppVersion, Review, CmsSettings } from './src/types';
 import { 
@@ -17,12 +19,63 @@ import {
   isR2Configured, uploadApkToR2, generateR2SignedDownloadUrl, 
   deleteApkFromR2, getR2Config 
 } from './src/server/r2Storage';
+import { validateAndroidApk } from './src/server/apkValidator';
 
 dotenv.config();
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const isProduction = process.env.NODE_ENV === 'production';
+
+// Trust first proxy hop (e.g. Cloud Run, reverse proxies) to prevent header-spoofed rate limit bypasses
+app.set('trust proxy', 1);
+
+// Strict CORS Configuration (Whitelist production origin & AI Studio preview origins)
+const allowedOrigins = [
+  'https://smile-playstore.ai.studio',
+  'https://ais-dev-5aueyswz5sqepfrkju2oos-59406420957.asia-southeast1.run.app',
+  'https://ais-pre-5aueyswz5sqepfrkju2oos-59406420957.asia-southeast1.run.app'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow non-browser agents (curl, server-to-server) or matching origins
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow localhost/127.0.0.1 in non-production
+    if (!isProduction && (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1'))) {
+      return callback(null, true);
+    }
+    // Reject other origins
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: false
+}));
+
+// Rate Limiters
+const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Max 10 login attempts per window
+  message: { error: 'Too many admin login attempts from this IP. Please try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 30, // Max 30 uploads per hour
+  message: { error: 'Upload rate limit exceeded. Maximum 30 uploads per hour.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const downloadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 150, // 150 downloads per 15 minutes
+  message: { error: 'Download rate limit reached. Please wait a moment before trying again.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 // Initialize server data & seed APK files on disk
 initDatabase();
@@ -49,7 +102,7 @@ const upload = multer({
   limits: { fileSize: 250 * 1024 * 1024 } // 250 MB
 });
 
-// Admin Authentication Middleware
+// Admin Authentication Middleware (Strict HMAC Bearer Token)
 const ADMIN_SECRET = process.env.JWT_SECRET || 'smilestore_super_admin_secret_key_2026';
 
 function generateAdminToken(email: string): string {
@@ -61,13 +114,23 @@ function generateAdminToken(email: string): string {
 
 function verifyAdminToken(token: string): string | null {
   try {
-    const [b64, sig] = token.split('.');
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [b64, sig] = parts;
     if (!b64 || !sig) return null;
     const expectedSig = crypto.createHmac('sha256', ADMIN_SECRET).update(b64).digest('base64url');
-    if (sig !== expectedSig) return null;
+    
+    // Constant-time signature comparison to prevent timing attacks
+    const sigBuf = Buffer.from(sig, 'utf-8');
+    const expectedBuf = Buffer.from(expectedSig, 'utf-8');
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return null;
+    }
+
     const payload = JSON.parse(Buffer.from(b64, 'base64url').toString('utf-8'));
-    if (payload.exp < Date.now()) return null;
-    if (!AUTHORIZED_ADMIN_EMAILS.includes(payload.email)) return null;
+    if (!payload.exp || typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
+    if (!payload.email || typeof payload.email !== 'string') return null;
+    if (!AUTHORIZED_ADMIN_EMAILS.includes(payload.email as any)) return null;
     return payload.email;
   } catch {
     return null;
@@ -76,20 +139,18 @@ function verifyAdminToken(token: string): string | null {
 
 function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
-  const rawEmailHeader = req.headers['x-admin-email'] as string;
 
   let verifiedEmail: string | null = null;
 
   if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
+    const token = authHeader.substring(7).trim();
     verifiedEmail = verifyAdminToken(token);
-  } else if (rawEmailHeader && AUTHORIZED_ADMIN_EMAILS.includes(rawEmailHeader as any)) {
-    verifiedEmail = rawEmailHeader;
   }
 
+  // Never trust client-supplied x-admin-email header for authorization
   if (!verifiedEmail) {
-    res.status(403).json({ 
-      error: 'Forbidden: CMS Administration access restricted to authorized emails (admin@mvp.com.ai, fileslanaja@gmail.com)' 
+    res.status(401).json({ 
+      error: 'Unauthorized: Cryptographically verified HMAC Bearer token required for CMS administration.' 
     });
     return;
   }
@@ -146,10 +207,20 @@ app.get('/api/v1/apps/package/:packageName', (req, res) => {
 });
 
 // 5. Download APK Binary Route (supports Cloudflare R2 Signed URLs and Direct Streaming)
-app.get('/api/v1/apps/:id/download', async (req, res) => {
+app.get('/api/v1/apps/:id/download', downloadLimiter, async (req, res) => {
   const appItem = getAppById(req.params.id);
   if (!appItem) {
     res.status(404).json({ error: 'Application not found' });
+    return;
+  }
+
+  // Prevent serving placeholder/synthetic binaries as genuine Android downloads
+  if (appItem.latestVersion.isPlaceholder) {
+    res.status(409).json({ 
+      error: 'Download unavailable: Seed placeholder app binary has not been replaced with a genuine signed release APK binary.',
+      packageName: appItem.packageName,
+      isPlaceholder: true
+    });
     return;
   }
 
@@ -204,10 +275,19 @@ app.get('/api/v1/apps/:id/download', async (req, res) => {
 });
 
 // 5b. Request Download Authorization URL (Section 7 Signed URL API)
-app.get('/api/v1/apps/:id/download-url', async (req, res) => {
+app.get('/api/v1/apps/:id/download-url', downloadLimiter, async (req, res) => {
   const appItem = getAppById(req.params.id);
   if (!appItem) {
     res.status(404).json({ error: 'Application not found' });
+    return;
+  }
+
+  if (appItem.latestVersion.isPlaceholder) {
+    res.status(409).json({ 
+      error: 'Download unavailable: Seed placeholder app binary has not been replaced with a genuine signed release APK binary.',
+      packageName: appItem.packageName,
+      isPlaceholder: true
+    });
     return;
   }
 
@@ -298,7 +378,7 @@ app.post('/api/v1/updates/check', (req, res) => {
 });
 
 // 8. Upload & Publish APK (Multipart form-data)
-app.post('/api/v1/upload', upload.single('apk'), (req, res) => {
+app.post('/api/v1/upload', uploadLimiter, upload.single('apk'), async (req, res) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'No APK file uploaded' });
@@ -323,7 +403,32 @@ app.post('/api/v1/upload', upload.single('apk'), (req, res) => {
     } = req.body;
 
     if (!name || !packageName) {
+      try { fs.unlinkSync(req.file.path); } catch {}
       res.status(400).json({ error: 'App name and package name are required' });
+      return;
+    }
+
+    // Validate APK extension
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    if (ext !== '.apk') {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      res.status(400).json({ error: 'Invalid file type: File must have a .apk extension' });
+      return;
+    }
+
+    // Comprehensive structural & signature verification of uploaded APK
+    const validation = validateAndroidApk(req.file.path);
+    if (!validation.valid) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      res.status(422).json({ 
+        error: `APK verification failed: ${validation.error}`,
+        validationDetails: {
+          hasManifest: validation.hasManifest,
+          hasDex: validation.hasDex,
+          hasSignature: validation.hasSignature,
+          signatureScheme: validation.signatureScheme
+        }
+      });
       return;
     }
 
@@ -337,9 +442,14 @@ app.post('/api/v1/upload', upload.single('apk'), (req, res) => {
 
     // If Cloudflare R2 is configured, upload to private bucket
     if (isR2Configured()) {
-      uploadApkToR2(storageKey, buffer, 'application/vnd.android.package-archive').catch((err) => {
-        console.error('[Cloudflare R2] Background upload error:', err);
-      });
+      const r2Success = await uploadApkToR2(storageKey, buffer, 'application/vnd.android.package-archive');
+      if (!r2Success) {
+        // Clean up local file on R2 failure
+        try { fs.unlinkSync(filePath); } catch {}
+        console.error(`[Cloudflare R2] Upload failed for ${storageKey}`);
+        res.status(502).json({ error: 'Failed to upload APK to Cloudflare R2 storage' });
+        return;
+      }
     }
 
     const settings = getSettings();
@@ -396,13 +506,22 @@ app.post('/api/v1/upload', upload.single('apk'), (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    saveOrUpdateApp(newApp);
+    try {
+      saveOrUpdateApp(newApp);
+    } catch (saveErr) {
+      // Rollback R2 object and disk file on database failure to prevent orphaned storage objects
+      if (isR2Configured()) {
+        await deleteApkFromR2(storageKey).catch(() => {});
+      }
+      try { fs.unlinkSync(filePath); } catch {}
+      throw saveErr;
+    }
 
     addAuditLog({
       actorEmail: developerEmail,
       action: 'APP_CREATED',
       target: newApp.name,
-      details: `Uploaded APK package ${newApp.packageName} (SHA-256: ${sha256.substring(0, 16)}...). Status: ${initialStatus}.`
+      details: `Uploaded APK package ${newApp.packageName} (SHA-256: ${sha256.substring(0, 16)}...). Status: ${initialStatus}. Signature: ${validation.signatureScheme}.`
     });
 
     res.status(201).json({ success: true, app: newApp });
@@ -417,7 +536,7 @@ app.post('/api/v1/upload', upload.single('apk'), (req, res) => {
 // -------------------------------------------------------------
 
 // Admin Login
-app.post('/api/v1/admin/login', (req, res) => {
+app.post('/api/v1/admin/login', adminLoginLimiter, (req, res) => {
   const { email } = req.body;
   if (!email) {
     res.status(400).json({ error: 'Email is required' });
@@ -465,6 +584,14 @@ app.patch('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
   const adminEmail = (req as any).adminEmail;
   const updates = req.body;
 
+  // Prevent approving or publishing placeholder fixture apps without a genuine release APK
+  if (updates.status === 'PUBLISHED' && existing.latestVersion.isPlaceholder) {
+    res.status(422).json({ 
+      error: 'Cannot approve application: Placeholder fixture app cannot be published without a genuine verified release APK binary.' 
+    });
+    return;
+  }
+
   const updated: AppItem = {
     ...existing,
     ...updates,
@@ -484,7 +611,7 @@ app.patch('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
 });
 
 // Admin: Delete App
-app.delete('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
+app.delete('/api/v1/admin/apps/:id', requireAdmin, async (req, res) => {
   const appItem = getAppById(req.params.id);
   if (!appItem) {
     res.status(404).json({ error: 'Application not found' });
@@ -492,18 +619,31 @@ app.delete('/api/v1/admin/apps/:id', requireAdmin, (req, res) => {
   }
 
   const adminEmail = (req as any).adminEmail;
+
+  // Await Cloudflare R2 delete operation before reporting deletion success
   if (isR2Configured()) {
-    deleteApkFromR2(getApkStorageKey(appItem)).catch((err) => {
-      console.warn('[Cloudflare R2] Object delete warning:', err);
-    });
+    try {
+      const storageKey = getApkStorageKey(appItem);
+      const deleted = await deleteApkFromR2(storageKey);
+      if (!deleted) {
+        console.error(`[Cloudflare R2] Deletion failed for storage key: ${storageKey}`);
+        res.status(502).json({ error: 'Failed to delete APK object from Cloudflare R2' });
+        return;
+      }
+    } catch (err) {
+      console.error('[Cloudflare R2] Object delete error during app removal:', err);
+      res.status(502).json({ error: 'Failed to delete APK object from Cloudflare R2' });
+      return;
+    }
   }
+
   deleteApp(appItem.id);
 
   addAuditLog({
     actorEmail: adminEmail,
     action: 'APP_DELETED',
     target: appItem.name,
-    details: `Admin deleted package ${appItem.packageName} from database and disk.`
+    details: `Admin deleted package ${appItem.packageName} from database and storage.`
   });
 
   res.json({ success: true });
@@ -532,6 +672,24 @@ app.put('/api/v1/admin/settings', requireAdmin, (req, res) => {
 // Admin: Get Audit Logs
 app.get('/api/v1/admin/audit-logs', requireAdmin, (_req, res) => {
   res.json({ auditLogs: getAuditLogs() });
+});
+
+// Global Error Handler for Multer, CORS, and Route Exceptions
+app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'Payload Too Large: APK file exceeds maximum size limit of 250 MB.' });
+    }
+    return res.status(400).json({ error: `File upload error: ${err.message}` });
+  }
+  if (err && err.message && err.message.includes('CORS blocked')) {
+    return res.status(403).json({ error: err.message });
+  }
+  if (err) {
+    console.error('[Internal Server Error]', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+  next();
 });
 
 // -------------------------------------------------------------

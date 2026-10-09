@@ -29,6 +29,7 @@ export const DownloadProgressModal: React.FC<DownloadProgressModalProps> = ({
   const [progress, setProgress] = useState(0);
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [copiedHash, setCopiedHash] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'guide' | 'integrity'>('guide');
 
   useEffect(() => {
@@ -36,6 +37,7 @@ export const DownloadProgressModal: React.FC<DownloadProgressModalProps> = ({
       setStage('authorizing');
       setProgress(0);
       setDownloadedBytes(0);
+      setDownloadError(null);
       return;
     }
 
@@ -71,39 +73,44 @@ export const DownloadProgressModal: React.FC<DownloadProgressModalProps> = ({
           const res = await fetch(`/api/v1/apps/${app.id}/download`);
           if (res.ok) {
             apkBlob = await res.blob();
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `Download failed with HTTP ${res.status}`);
           }
-        } catch (e) {
-          console.warn('Server download stream fallback:', e);
+        } catch (e: any) {
+          console.warn('Server download stream response:', e);
+          if (currentVersion.isCustomUploaded) {
+            apkBlob = await getApkBlob(currentVersion.id);
+          }
+          if (!apkBlob) {
+            throw e;
+          }
         }
 
-        if (!apkBlob && currentVersion.isCustomUploaded) {
-          apkBlob = await getApkBlob(currentVersion.id);
+        if (apkBlob) {
+          const safeFilename = `${app.slug || app.packageName}-v${currentVersion.versionName}.apk`;
+          triggerFileDownload(apkBlob, safeFilename);
+
+          // Record telemetry in history
+          recordDownload({
+            id: `dl-${Date.now()}`,
+            appId: app.id,
+            appName: app.name,
+            packageName: app.packageName,
+            iconUrl: app.iconUrl,
+            versionName: currentVersion.versionName,
+            versionCode: currentVersion.versionCode,
+            fileSizeFormatted: currentVersion.fileSizeFormatted,
+            sha256: currentVersion.sha256,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          });
+
+          onDownloadCompleted(app.id);
+          setStage('completed');
         }
-        if (!apkBlob) {
-          apkBlob = createSyntheticApkBlob(app.name, app.packageName, currentVersion.versionName);
-        }
-
-        const safeFilename = `${app.slug || app.packageName}-v${currentVersion.versionName}.apk`;
-        triggerFileDownload(apkBlob, safeFilename);
-
-        // Record telemetry in history
-        recordDownload({
-          id: `dl-${Date.now()}`,
-          appId: app.id,
-          appName: app.name,
-          packageName: app.packageName,
-          iconUrl: app.iconUrl,
-          versionName: currentVersion.versionName,
-          versionCode: currentVersion.versionCode,
-          fileSizeFormatted: currentVersion.fileSizeFormatted,
-          sha256: currentVersion.sha256,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        });
-
-        onDownloadCompleted(app.id);
-        setStage('completed');
-      } catch (e) {
+      } catch (e: any) {
         console.error('Download trigger error:', e);
+        setDownloadError(e.message || 'Download unavailable for placeholder app.');
         setStage('completed');
       }
     };
@@ -167,24 +174,37 @@ export const DownloadProgressModal: React.FC<DownloadProgressModalProps> = ({
                 </>
               )}
               {stage === 'completed' && (
-                <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-emerald-400 font-bold">APK Download Complete!</span>
-                </>
+                downloadError ? (
+                  <>
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                    <span className="text-rose-400 font-bold">Download Restricted</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400 font-bold">APK Download Complete!</span>
+                  </>
+                )
               )}
             </div>
-            <span className="font-mono text-xs font-bold text-white">{progress}%</span>
+            <span className="font-mono text-xs font-bold text-white">{downloadError ? '—' : `${progress}%`}</span>
           </div>
 
+          {downloadError && (
+            <div className="mt-2.5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
+              {downloadError}
+            </div>
+          )}
+
           {/* Progress bar */}
-          <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden p-0.5">
+          <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden p-0.5 mt-2">
             <div
               className={`h-full rounded-full transition-all duration-150 ${
                 stage === 'completed'
-                  ? 'bg-emerald-500'
+                  ? (downloadError ? 'bg-rose-500' : 'bg-emerald-500')
                   : 'bg-gradient-to-r from-amber-500 via-orange-500 to-amber-300'
               }`}
-              style={{ width: `${progress}%` }}
+              style={{ width: `${downloadError ? 100 : progress}%` }}
             />
           </div>
 

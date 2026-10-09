@@ -12,13 +12,37 @@ export interface R2Config {
 }
 
 export function getR2Config(): R2Config {
+  let rawEndpoint = (process.env.STORAGE_ENDPOINT || '').trim();
+
+  // If unreplaced placeholder or empty, use the user's validated account ID
+  if (!rawEndpoint || rawEndpoint.includes('YOUR_ACCOUNT_ID')) {
+    rawEndpoint = 'https://79f6add8b0df2de6944fd2414a937622.r2.cloudflarestorage.com';
+  } else {
+    // Add protocol if missing
+    if (!rawEndpoint.startsWith('http://') && !rawEndpoint.startsWith('https://')) {
+      rawEndpoint = `https://${rawEndpoint}`;
+    }
+    // Fix missing dot before r2 (e.g. 79f6add8b0df2de6944fd2414a937622r2.cloudflarestorage.com)
+    rawEndpoint = rawEndpoint.replace(/([0-9a-fA-F]{32})r2\.cloudflarestorage\.com/, '$1.r2.cloudflarestorage.com');
+  }
+
+  const rawProvider = (process.env.STORAGE_PROVIDER || '').trim().toLowerCase();
+  // If provider is cloudflare_r2 or endpoint is an r2 domain, resolve to cloudflare_r2
+  const isR2 = rawProvider === 'cloudflare_r2' || rawEndpoint.includes('r2.cloudflarestorage.com');
+  const provider = isR2 ? 'cloudflare_r2' : (rawProvider || 'local');
+
+  const bucket = (process.env.STORAGE_BUCKET || 'smile-store-apks').trim();
+  const region = (process.env.STORAGE_REGION || 'auto').trim();
+  const accessKeyId = (process.env.STORAGE_ACCESS_KEY || '').trim();
+  const secretAccessKey = (process.env.STORAGE_SECRET_KEY || '').trim();
+
   return {
-    provider: (process.env.STORAGE_PROVIDER || '').trim().toLowerCase(),
-    bucket: (process.env.STORAGE_BUCKET || '').trim(),
-    region: (process.env.STORAGE_REGION || 'auto').trim(),
-    endpoint: (process.env.STORAGE_ENDPOINT || '').trim(),
-    accessKeyId: (process.env.STORAGE_ACCESS_KEY || '').trim(),
-    secretAccessKey: (process.env.STORAGE_SECRET_KEY || '').trim(),
+    provider,
+    bucket,
+    region,
+    endpoint: rawEndpoint,
+    accessKeyId,
+    secretAccessKey,
   };
 }
 
@@ -28,6 +52,7 @@ export function isR2Configured(): boolean {
     config.provider === 'cloudflare_r2' &&
     Boolean(config.bucket) &&
     Boolean(config.endpoint) &&
+    !config.endpoint.includes('YOUR_ACCOUNT_ID') &&
     Boolean(config.accessKeyId) &&
     Boolean(config.secretAccessKey)
   );

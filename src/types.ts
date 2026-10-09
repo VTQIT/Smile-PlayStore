@@ -13,6 +13,7 @@ export interface AppVersion {
   apkBlobUrl?: string; // if uploaded in session
   downloadUrl?: string;
   isCustomUploaded?: boolean;
+  isPlaceholder?: boolean;
 }
 
 export interface Review {

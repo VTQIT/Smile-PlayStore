@@ -79,10 +79,9 @@ export async function apiAdminLogin(email: string): Promise<{ token: string; ema
   return await res.json();
 }
 
-export async function apiFetchAdminApps(token?: string, email?: string): Promise<AppItem[]> {
+export async function apiFetchAdminApps(token?: string): Promise<AppItem[]> {
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (email) headers['x-admin-email'] = email;
 
   const res = await fetch(`${API_BASE}/admin/apps`, { headers });
   if (!res.ok) throw new Error('Failed to fetch admin apps');
@@ -90,10 +89,9 @@ export async function apiFetchAdminApps(token?: string, email?: string): Promise
   return data.apps || [];
 }
 
-export async function apiUpdateAdminApp(id: string, updates: Partial<AppItem>, token?: string, email?: string): Promise<AppItem> {
+export async function apiUpdateAdminApp(id: string, updates: Partial<AppItem>, token?: string): Promise<AppItem> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (email) headers['x-admin-email'] = email;
 
   const res = await fetch(`${API_BASE}/admin/apps/${id}`, {
     method: 'PATCH',
@@ -105,10 +103,9 @@ export async function apiUpdateAdminApp(id: string, updates: Partial<AppItem>, t
   return data.app;
 }
 
-export async function apiDeleteAdminApp(id: string, token?: string, email?: string): Promise<void> {
+export async function apiDeleteAdminApp(id: string, token?: string): Promise<void> {
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (email) headers['x-admin-email'] = email;
 
   const res = await fetch(`${API_BASE}/admin/apps/${id}`, {
     method: 'DELETE',
@@ -117,20 +114,18 @@ export async function apiDeleteAdminApp(id: string, token?: string, email?: stri
   if (!res.ok) throw new Error('Failed to delete app');
 }
 
-export async function apiFetchAdminSettings(token?: string, email?: string): Promise<CmsSettings> {
+export async function apiFetchAdminSettings(token?: string): Promise<CmsSettings> {
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (email) headers['x-admin-email'] = email;
 
   const res = await fetch(`${API_BASE}/admin/settings`, { headers });
   if (!res.ok) throw new Error('Failed to fetch settings');
   return await res.json();
 }
 
-export async function apiSaveAdminSettings(settings: CmsSettings, token?: string, email?: string): Promise<CmsSettings> {
+export async function apiSaveAdminSettings(settings: CmsSettings, token?: string): Promise<CmsSettings> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (email) headers['x-admin-email'] = email;
 
   const res = await fetch(`${API_BASE}/admin/settings`, {
     method: 'PUT',
@@ -142,10 +137,9 @@ export async function apiSaveAdminSettings(settings: CmsSettings, token?: string
   return data.settings;
 }
 
-export async function apiFetchAdminAuditLogs(token?: string, email?: string): Promise<CmsAuditLog[]> {
+export async function apiFetchAdminAuditLogs(token?: string): Promise<CmsAuditLog[]> {
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (email) headers['x-admin-email'] = email;
 
   const res = await fetch(`${API_BASE}/admin/audit-logs`, { headers });
   if (!res.ok) return [];

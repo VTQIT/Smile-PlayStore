@@ -38,31 +38,12 @@ export function initDatabase(): void {
   let dbData: DatabaseSchema;
 
   if (!fs.existsSync(DB_FILE)) {
-    // Seed initial applications and generate their real APK files on disk
+    // Seed initial showcase catalog with isPlaceholder metadata flag
+    // Notice: Generated fixtures are identified as placeholders, not real installable release APKs
     const seededApps: AppItem[] = INITIAL_APPS.map((app) => {
-      const filename = `${app.slug}-v${app.latestVersion.versionName}.apk`;
-      const apkPath = path.resolve(APK_STORAGE_DIR, filename);
-
-      // Generate a valid APK binary on disk
-      const binary = buildValidApkBuffer(
-        app.name,
-        app.packageName,
-        app.latestVersion.versionName,
-        app.latestVersion.versionCode
-      );
-      fs.writeFileSync(apkPath, binary);
-
-      const realSha256 = crypto.createHash('sha256').update(binary).digest('hex');
-      const realSize = binary.length;
-      const formattedSize = `${(realSize / 1024).toFixed(1)} KB`;
-      const storageKey = `apps/${app.packageName}/versions/${app.latestVersion.versionName}/${realSha256}.apk`;
-
       const updatedVersion: AppVersion = {
         ...app.latestVersion,
-        sha256: realSha256,
-        fileSize: realSize,
-        fileSizeFormatted: formattedSize,
-        storageKey,
+        isPlaceholder: true,
         downloadUrl: `/api/v1/apps/${app.id}/download`
       };
 
@@ -83,12 +64,28 @@ export function initDatabase(): void {
           action: 'SETTINGS_UPDATED',
           target: 'System Provisioning',
           timestamp: new Date().toLocaleString(),
-          details: 'Production database initialized with real cryptographic APK binaries.'
+          details: 'Production catalog initialized. Showcase entries marked as catalog placeholders awaiting signed production release binaries.'
         }
       ]
     };
 
     fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf-8');
+  } else {
+    // Migrate existing DB if needed: ensure seed apps without real uploads have isPlaceholder marked
+    try {
+      const current = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as DatabaseSchema;
+      let changed = false;
+      current.apps = current.apps.map(app => {
+        if (!app.latestVersion.isCustomUploaded && !app.latestVersion.isPlaceholder) {
+          app.latestVersion.isPlaceholder = true;
+          changed = true;
+        }
+        return app;
+      });
+      if (changed) {
+        fs.writeFileSync(DB_FILE, JSON.stringify(current, null, 2), 'utf-8');
+      }
+    } catch {}
   }
 }
 
@@ -203,6 +200,11 @@ export function addReviewToApp(id: string, review: Review): AppItem | null {
 
 // Get APK file path on disk
 export function getApkFilePath(app: AppItem): string | null {
+  // If app is a placeholder fixture without uploaded binary, return null
+  if (app.latestVersion.isPlaceholder) {
+    return null;
+  }
+
   // Check standard naming
   const filename = `${app.slug}-v${app.latestVersion.versionName}.apk`;
   const filePath = path.resolve(APK_STORAGE_DIR, filename);
@@ -210,22 +212,16 @@ export function getApkFilePath(app: AppItem): string | null {
     return filePath;
   }
 
-  // Fallback: check if any file starts with slug
-  const files = fs.readdirSync(APK_STORAGE_DIR);
-  const match = files.find(f => f.startsWith(app.slug) || f.startsWith(app.packageName));
-  if (match) {
-    return path.resolve(APK_STORAGE_DIR, match);
+  // Check if any file starts with slug or package name
+  if (fs.existsSync(APK_STORAGE_DIR)) {
+    const files = fs.readdirSync(APK_STORAGE_DIR);
+    const match = files.find(f => f.startsWith(app.slug) || f.startsWith(app.packageName));
+    if (match) {
+      return path.resolve(APK_STORAGE_DIR, match);
+    }
   }
 
-  // If missing, generate it on demand so it never fails!
-  const binary = buildValidApkBuffer(
-    app.name,
-    app.packageName,
-    app.latestVersion.versionName,
-    app.latestVersion.versionCode
-  );
-  fs.writeFileSync(filePath, binary);
-  return filePath;
+  return null;
 }
 
 export function getApkStorageKey(app: AppItem): string {

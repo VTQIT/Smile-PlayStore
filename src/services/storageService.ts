@@ -197,6 +197,7 @@ import { CmsSettings, CmsAuditLog } from '../types';
 const STORAGE_KEY_CMS_SETTINGS = 'smilestore_cms_settings_v1';
 const STORAGE_KEY_AUDIT_LOGS = 'smilestore_audit_logs_v1';
 const STORAGE_KEY_ADMIN_SESSION = 'smilestore_admin_session_v1';
+const STORAGE_KEY_ADMIN_TOKEN = 'smilestore_admin_token_v1';
 
 export const DEFAULT_CMS_SETTINGS: CmsSettings = {
   storeName: 'Smile Store',
@@ -271,12 +272,25 @@ export function loadAdminSession(): string | null {
   }
 }
 
-export function saveAdminSession(email: string | null): void {
+export function loadAdminToken(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY_ADMIN_TOKEN);
+  } catch {
+    return null;
+  }
+}
+
+export function saveAdminSession(email: string | null, token: string | null = null): void {
   try {
     if (email) {
       localStorage.setItem(STORAGE_KEY_ADMIN_SESSION, email);
     } else {
       localStorage.removeItem(STORAGE_KEY_ADMIN_SESSION);
+    }
+    if (token) {
+      localStorage.setItem(STORAGE_KEY_ADMIN_TOKEN, token);
+    } else if (!email) {
+      localStorage.removeItem(STORAGE_KEY_ADMIN_TOKEN);
     }
   } catch (e) {
     console.error('Failed to save admin session:', e);
