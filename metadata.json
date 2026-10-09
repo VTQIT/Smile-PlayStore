@@ -1,0 +1,7 @@
+{
+  "name": "Smile Store - Cloud Android Marketplace",
+  "description": "Architectural blueprint, system design, and cloud platform console for Smile Store, an independent cloud-based Android app marketplace.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
